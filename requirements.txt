@@ -1,0 +1,9 @@
+streamlit
+langchain
+langchain-core
+langchain-groq
+langchain-community
+validators
+requests
+beautifulsoup4
+python-dotenv
