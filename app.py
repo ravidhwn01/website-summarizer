@@ -27,6 +27,7 @@ Content: {text}
 """
 prompt = PromptTemplate(template=prompt_template, input_variables=["text"])
 
+print(prompt.format(text="This is a test."))
 
 def load_website(url):
     headers = {
