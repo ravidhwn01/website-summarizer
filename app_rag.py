@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 load_dotenv()
+import hashlib
 import os
 
 
@@ -44,6 +45,22 @@ prompt = PromptTemplate.from_template(prompt_template)
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
+
+def format_sources(docs):
+    sources = []
+    for index, doc in enumerate(docs, start=1):
+        source = doc.metadata.get("source", "Unknown source")
+        chunk = doc.metadata.get("chunk", index)
+        preview = " ".join(doc.page_content.split())[:350]
+        sources.append(f"**{index}. Source:** {source}  \n**Chunk:** {chunk}  \n**Preview:** {preview}...")
+    return sources
+
+
+def collection_name_for_url(url):
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return f"web_{url_hash}"
+
+@st.cache_data(show_spinner=False)
 def load_website(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -70,7 +87,29 @@ def load_website(url):
     )
     text = main_content.get_text(separator=" ", strip=True) if main_content else soup.get_text()
     text = " ".join(text.split())
-    return [Document(page_content=text)]
+    return [Document(page_content=text, metadata={"source": url})]
+
+
+@st.cache_resource(show_spinner=False)
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+
+def build_retriever(url, docs):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
+
+    for index, chunk in enumerate(splits, start=1):
+        chunk.metadata["chunk"] = index
+
+    embeddings = get_embeddings()
+    vectorstore = Chroma.from_documents(
+        documents=splits,
+        embedding=embeddings,
+        collection_name=collection_name_for_url(url),
+    )
+
+    return vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 4, "fetch_k": 12})
 
 
 if st.button("Get Answer"):
@@ -89,26 +128,19 @@ if st.button("Get Answer"):
             with st.spinner("Fetching content, creating vector store, and generating answer..."):
                 llm = ChatGroq(model="llama-3.1-8b-instant", groq_api_key=groq_api_key)
                 
-                # Load and split documents
                 docs = load_website(url)
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                splits = text_splitter.split_documents(docs)
+                retriever = build_retriever(url, docs)
+                retrieved_docs = retriever.invoke(question)
+                context_text = format_docs(retrieved_docs)
 
-                # Create vector store
-                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-                vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
-
-                retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
-
-                rag_chain = (
-                    {"context": retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
-                    | prompt
-                    | llm
-                    | StrOutputParser()
-                )
-                
-                answer = rag_chain.invoke(question)
+                rag_chain = prompt | llm | StrOutputParser()
+                answer = rag_chain.invoke({"context": context_text, "question": question})
                 st.success(answer)
+
+                with st.expander("Show retrieved sources"):
+                    for source_block in format_sources(retrieved_docs):
+                        st.markdown(source_block)
+                        st.divider()
 
         except requests.exceptions.Timeout:
             st.error("⏱️ The website took too long to respond. Try a different URL.")
