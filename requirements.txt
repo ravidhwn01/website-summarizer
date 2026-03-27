@@ -1,9 +1,13 @@
 streamlit
 langchain
 langchain-core
+langchain-openai
 langchain-groq
 langchain-community
 validators
 requests
 beautifulsoup4
 python-dotenv
+langchain-chroma
+langchain-text-splitters
+langchain-huggingface
